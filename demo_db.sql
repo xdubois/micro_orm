@@ -13,6 +13,6 @@ CREATE TABLE compte (
 );
 
 ALTER TABLE compte
-  ADD FOREIGN KEY (client_id) REFERENCES client(id);
+  ADD FOREIGN KEY (client_id) REFERENCES client(id) ON DELETE CASCADE;
 
 
