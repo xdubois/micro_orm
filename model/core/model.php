@@ -1,4 +1,6 @@
 <?php
+require_once('modelIterator.php');
+
 /**
  * Name:  Model
  *
@@ -11,7 +13,7 @@
  * Micro orm like Model implementation 
  * using PDO
  */
-abstract class Model {
+abstract class Model implements IteratorAggregate {
     
   protected $table;
   protected $dbh;
@@ -20,6 +22,8 @@ abstract class Model {
   private $sql;
   private $counters;
   private $params = [];
+  private $items = [];
+  protected $attributes = [];
 
   public function __construct($dbh) {
     $this->dbh = $dbh;
@@ -28,6 +32,14 @@ abstract class Model {
     $this->counters['order'] = 0;
     $this->counters['select'] = 0;
     $this->counters['params'] = 1;
+  }
+
+  /**
+   *  get Iterator over the items
+   * @return Iterator
+   */
+  public function getIterator() {
+    return new ModelIterator($this->items);
   }
 
 
@@ -105,8 +117,20 @@ abstract class Model {
    * @return Array result fetched in object
    */
   public function get() {
+    $this->execute();
+    $this->fetch();
 
-    return $this->execute($this->sql)->fetchAll(PDO::FETCH_OBJ);
+    // @TODO
+    // Decide the best way to handle this 
+    // return null or empty object ?
+    // if ($this->count() == 0) {
+    //    return NULL;
+    // } 
+    if ($this->count() == 1) {
+      $this->bindAttributs();
+    }
+
+    return $this;
   }
 
   /**
@@ -119,6 +143,7 @@ abstract class Model {
   public function find($id, $where = 'id') {
     $this->sql = "SELECT * FROM $this->table WHERE $where = ?";
     $this->params[$this->counters['params']++] = $id;
+  
     return $this->first();
   }
 
@@ -128,20 +153,24 @@ abstract class Model {
    */
   public function all() {
     $this->sql = "SELECT * FROM $this->table";
-
-    return $this->execute()->fetchAll(PDO::FETCH_OBJ);
+    return $this->get();
   }
 
   /**
-   * execute the current query but retreive
-   * only the first result
+   * retreive only the first result
    * bind attributs to the current object
    * @return $this 
    */
   public function first() {
+
     $this->execute();
-    $this->bindAttributs();
+    $this->items[0] = $this->statement->fetch(PDO::FETCH_OBJ);
+
+    if ($this->count() == 0) {
+      return NULL;
+    }
     
+    $this->bindAttributs();
     return $this;
   }
 
@@ -173,7 +202,7 @@ abstract class Model {
     $this->sql = "SELECT count(*) FROM $this->table";
     $this->execute();
 
-    return $this->execute()->fetchColumn();
+    return $this->statement->fetchColumn();
   }
 
   /**
@@ -184,20 +213,6 @@ abstract class Model {
     return $this->statement;
   }
 
-  /**
-   * protected attribut, they will not be filled
-   * when saving an entity
-   * @return Array attributs
-   */
-  protected function getProtectedAttributs() {
-    return ['table', 
-            'dbh',
-            'statement',
-            'sql',
-            'counters',
-            'params',
-            'primary_key'];
-  }
 
   /**
    * execute the query
@@ -210,19 +225,38 @@ abstract class Model {
       for ($i = 1; $i < $this->counters['params']; $i++) {
         $this->statement->bindParam($i, $this->params[$i]);
       }
-      $this->statement->execute();
-
-      //reset counters
-      $this->counters['order'] = 0;
-      $this->counters['where'] = 0;
-      $this->counters['select'] = 0;
-      $this->counters['params'] = 1;
+      $success = $this->statement->execute();
+      if ($success) {
+        //reset value
+        $this->items = NULL;
+        //reset counters
+        $this->counters['order'] = 0;
+        $this->counters['where'] = 0;
+        $this->counters['select'] = 0;
+        $this->counters['params'] = 1;
+      }
     }
     catch(PDOException $exception){
       print 'Erreur : '. $exception->getMessage();
     }
 
-    return $this->statement;
+    return $success;
+  }
+
+  /**
+   *  fetch data
+   * @return void
+   */
+  protected function fetch() {
+    $this->items = $this->statement->fetchAll(PDO::FETCH_OBJ);
+  }
+
+  /**
+   * fetch first row
+   * @return void 
+   */
+  protected function fetchFirst() {
+    $this->items[0] = $this->statement->fetch(PDO::FETCH_OBJ);
   }
 
   /**
@@ -230,20 +264,16 @@ abstract class Model {
    * @return int inserted id
    */
   public function save() {
-
-    if ($this->{$this->primary_key} != NULL) {
-      $attributs = $this->getProtectedAttributs();
-      //Removed the pk from the update
-      $attributs[] = $this->primary_key;
-      $this->update($attributs);
-      return $this->{$this->primary_key};
+    if ($this->getAttribute($this->primary_key)) {
+      $this->update($this->attributes);
+      return $this->attributes[$this->primary_key];
     }
 
     $sql_attr = '';
     $sql_value = '';
     $count = 0;
-    foreach ($this as $key => $value) {
-      if (!in_array($key, $this->getProtectedAttributs()) && $value != NULL) {
+    foreach ($this->attributes as $key => $value) {
+      if ($value != NULL) {
         $sql_attr .= "$key,";
         $count++;
         $this->params[$this->counters['params']++] = $value;
@@ -266,20 +296,18 @@ abstract class Model {
    * @param  Array $attributs attributs to update
    * @return $this->execute()  
    */
-  public function update($attributs = []) {
+  public function update($attributes = []) {
 
-    if ($this->{$this->primary_key} === NULL) {
+    if ($this->getAttribute($this->primary_key) === NULL) {
       return false;
     }
 
     $this->sql = "UPDATE $this->table SET ";
     $sql_attr = '';
-    foreach ($this as $key => $value) {
-      if (!in_array($key, $attributs) && $value != NULL) {
+    foreach ($this->attributes as $key => $value) {
         $sql_attr .= "$key = ?,";
-        $this->{$key} = $value;
+        $this->attributes[$key] = $value;
         $this->params[$this->counters['params']++] = $value;
-      }
     }
     $this->sql .= substr($sql_attr, 0, -1);
     $this->counters['select']++; //quick hack
@@ -331,12 +359,50 @@ abstract class Model {
    * @return void 
    */
   protected function bindAttributs() {
-    $fetch = $this->statement->fetch(PDO::FETCH_OBJ);
-    if ($fetch !== FALSE) {
-      foreach ($fetch as $key => $value) {
-        $this->{$key} = $value;
+    $item = isset($this->items[0]) ? $this->items[0] : FALSE;
+    if ($item !== FALSE) {
+      foreach ($item as $key => $value) {
+        $this->setAttribute($key, $value);
       }
     }
+  }
+
+  /**
+   *  get an attribute
+   * @param  mixed $key   
+   * @return  mixed       attribute value
+   */
+  public function getAttribute($key) {
+    if (array_key_exists($key, $this->attributes)) {
+      return $this->attributes[$key];
+    }
+
+    return FALSE;
+  }
+
+  public function setAttribute($key, $value) {
+     $this->attributes[$key] = $value;
+  }
+
+  /**
+   * Dynamically retrieve attributes on the model.
+   *
+   * @param  string  $key
+   * @return mixed
+   */
+  public function __get($key) {
+    return $this->getAttribute($key);
+  }
+
+  /**
+   * Dynamically set attributes on the model.
+   *
+   * @param  string  $key
+   * @param  mixed   $value
+   * @return void
+   */
+  public function __set($key, $value) {
+    $this->attributes[$key] = $value;
   }
 
 
