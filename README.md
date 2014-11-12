@@ -5,8 +5,8 @@ Description:
  Micro orm like Model implementation 
  using PDO
 
- You need to define the attributs in your model
- and specify any relations.
+You can specify relations in your models
+
 
  This was an afternoon project, don't use it in production
 
